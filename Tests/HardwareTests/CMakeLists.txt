@@ -24,6 +24,9 @@ target_link_libraries(Sts1CobcSwTests_Spi PRIVATE etl::etl rodos::rodos type_saf
 add_program(Uart Uart.test.cpp)
 target_link_libraries(Sts1CobcSwTests_Uart PRIVATE rodos::rodos Sts1CobcSw_Hal)
 
+add_program(CosmosUart CosmosUart.test.cpp)
+target_link_libraries(Sts1CobcSwTests_CosmosUart PRIVATE rodos::rodos type_safe Sts1CobcSw_Hal Sts1CobcSw_Serial)
+
 get_property(
     top_level_hw_test_targets
     DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
