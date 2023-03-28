@@ -7,8 +7,12 @@
 #include <Sts1CobcSw/Hal/IoNames.hpp>
 #include <Sts1CobcSw/Serial/Byte.hpp>
 #include <Sts1CobcSw/Serial/Serial.hpp>
+#include <Sts1CobcSw/Utility/Crc32.hpp>
+#include <Sts1CobcSw/Utility/Time.hpp>
 
 #include <type_safe/types.hpp>
+
+#include <random.h>
 
 #include <rodos_no_using_namespace.h>
 
@@ -20,7 +24,6 @@ namespace sts1cobcsw
 {
 namespace ts = type_safe;
 using ts::operator""_u8;
-using ts::operator""_u16;
 using ts::operator""_u32;
 using ts::operator""_i16;
 using ts::operator""_i32;
@@ -30,8 +33,12 @@ using sts1cobcsw::serial::SerializeTo;
 
 
 auto uciUart = RODOS::HAL_UART(hal::uciUartIndex, hal::uciUartTxPin, hal::uciUartRxPin);
-constexpr auto basicTelemetryLength = 5_u8;
-
+constexpr auto basicCommunicationCmdId = 118_u8;
+constexpr auto dataCollectionCmdId = 129_u8;
+constexpr auto statusCollectionMode = 0_u8;
+constexpr auto temperatureCollectionMode = 1_u8;
+constexpr auto temperaturePadding = 3;
+constexpr auto statusPadding = 3;
 
 struct CosmosTestCommand
 {
@@ -39,7 +46,6 @@ struct CosmosTestCommand
     ts::int32_t timestamp = 0_i32;
     ts::int16_t length = 0_i16;
     ts::uint8_t data = 0_u8;
-    ts::uint32_t crc32 = 0_u32;
 };
 
 
@@ -49,7 +55,6 @@ struct BasicTelemetry
     ts::int32_t timestamp = 0_i32;
     ts::int16_t length = 5_u8;
     ts::uint8_t padding = 0_u8;
-    ts::uint32_t crc32 = 0_u32;
 };
 
 
@@ -57,11 +62,9 @@ struct StatusTelemetry
 {
     ts::uint8_t id = 0_u8;
     ts::int32_t timestamp = 0_i32;
-    ts::int16_t length = 0_i16;
+    ts::int16_t length = 9_i16;
     ts::uint8_t status1 = 0_u8;
     ts::uint8_t status2 = 0_u8;
-    std::array<ts::uint8_t, 3> padding = {0_u8, 0_u8, 0_u8};
-    ts::uint32_t crc32 = 0_u32;
 };
 
 
@@ -69,10 +72,8 @@ struct TemperatureTelemetry
 {
     ts::uint8_t id = 0_u8;
     ts::int32_t timestamp = 0_i32;
-    ts::int16_t length = 0_i16;
-    ts::uint16_t temperature = 0_u16;
-    std::array<ts::uint8_t, 3> padding = {0_u8, 0_u8, 0_u8};
-    ts::uint32_t crc32 = 0_u32;
+    ts::int16_t length = 9_i16;
+    ts::int16_t temperature = 0_i16;
 };
 
 
@@ -83,16 +84,14 @@ constexpr std::size_t serialSize<CosmosTestCommand> =
     totalSerialSize<decltype(CosmosTestCommand::id),
                     decltype(CosmosTestCommand::timestamp),
                     decltype(CosmosTestCommand::length),
-                    decltype(CosmosTestCommand::data),
-                    decltype(CosmosTestCommand::crc32)>;
+                    decltype(CosmosTestCommand::data)>;
 
 template<>
 constexpr std::size_t serialSize<BasicTelemetry> =
     totalSerialSize<decltype(BasicTelemetry::id),
                     decltype(BasicTelemetry::timestamp),
                     decltype(BasicTelemetry::length),
-                    decltype(BasicTelemetry::padding),
-                    decltype(BasicTelemetry::crc32)>;
+                    decltype(BasicTelemetry::padding)>;
 
 template<>
 constexpr std::size_t serialSize<StatusTelemetry> =
@@ -100,18 +99,16 @@ constexpr std::size_t serialSize<StatusTelemetry> =
                     decltype(StatusTelemetry::timestamp),
                     decltype(StatusTelemetry::length),
                     decltype(StatusTelemetry::status1),
-                    decltype(StatusTelemetry::status2),
-                    decltype(StatusTelemetry::padding),
-                    decltype(StatusTelemetry::crc32)>;
+                    decltype(StatusTelemetry::status2)>
+    + statusPadding;
 
 template<>
 constexpr std::size_t serialSize<TemperatureTelemetry> =
     totalSerialSize<decltype(TemperatureTelemetry::id),
                     decltype(TemperatureTelemetry::timestamp),
                     decltype(TemperatureTelemetry::length),
-                    decltype(TemperatureTelemetry::temperature),
-                    decltype(TemperatureTelemetry::padding),
-                    decltype(TemperatureTelemetry::crc32)>;
+                    decltype(TemperatureTelemetry::temperature)>
+    + temperaturePadding;
 }
 
 
@@ -121,7 +118,6 @@ auto DeserializeFrom(Byte * source, CosmosTestCommand * data) -> Byte *
     source = DeserializeFrom(source, &(data->timestamp));
     source = DeserializeFrom(source, &(data->length));
     source = DeserializeFrom(source, &(data->data));
-    source = DeserializeFrom(source, &(data->crc32));
     return source;
 }
 
@@ -132,10 +128,49 @@ auto SerializeTo(Byte * destination, BasicTelemetry const & data) -> Byte *
     destination = SerializeTo(destination, data.timestamp);
     destination = SerializeTo(destination, data.length);
     destination = SerializeTo(destination, data.padding);
-    destination = SerializeTo(destination, data.crc32);
     return destination;
 }
 
+auto SerializeTo(Byte * destination, StatusTelemetry const & data) -> Byte *
+{
+    destination = SerializeTo(destination, data.id);
+    destination = SerializeTo(destination, data.timestamp);
+    destination = SerializeTo(destination, data.length);
+    destination = SerializeTo(destination, data.status1);
+    destination = SerializeTo(destination, data.status2);
+    for(auto i = 0; i < statusPadding; i++)
+    {
+        destination = SerializeTo(destination, 0_u8);
+    }
+
+    return destination;
+}
+
+auto SerializeTo(Byte * destination, TemperatureTelemetry const & data) -> Byte *
+{
+    destination = SerializeTo(destination, data.id);
+    destination = SerializeTo(destination, data.timestamp);
+    destination = SerializeTo(destination, data.length);
+    destination = SerializeTo(destination, data.temperature);
+    for(auto i = 0; i < temperaturePadding; i++)
+    {
+        destination = SerializeTo(destination, 0_u8);
+    }
+    return destination;
+}
+
+template<typename T>
+auto SendPacket(T & packet, RODOS::HAL_UART * uart)
+{
+    // auto utcTimestamp = utility::GetUnixUtc();
+    packet.timestamp = static_cast<ts::int32_t>(utility::GetUnixUtc());
+
+    auto packetBuffer = serial::Serialize(packet);
+    auto crc32 = utility::Crc32(packetBuffer);
+    auto crc32Buffer = serial::Serialize(crc32);
+    hal::WriteTo(uart, std::span<Byte>(packetBuffer));
+    hal::WriteTo(uart, std::span<Byte>(crc32Buffer));
+}
 
 class CosmosUartTest : public RODOS::StaticThread<>
 {
@@ -153,13 +188,49 @@ class CosmosUartTest : public RODOS::StaticThread<>
         while(true)
         {
             auto commandBuffer = serial::SerialBuffer<CosmosTestCommand>{};
-            auto bufferSpan = std::span<Byte>(commandBuffer);
-            hal::ReadFrom(&uciUart, bufferSpan);
-            hal::WriteTo(&uciUart, "Done reading\n");
-            auto basicTelemetry = BasicTelemetry();
-            auto basicSerialBuffer = serial::Serialize(basicTelemetry);
-            hal::WriteTo(&uciUart, std::span<Byte>(basicSerialBuffer));
-            hal::WriteTo(&uciUart, "Done sending\n");
+            auto commandCrc32Buffer = serial::SerialBuffer<ts::uint32_t>{};
+
+            hal::ReadFrom(&uciUart, std::span<Byte>(commandBuffer));
+            hal::ReadFrom(&uciUart, std::span<Byte>(commandCrc32Buffer));
+
+            auto command = CosmosTestCommand();
+            auto commandCrc32 = 0_u32;
+            DeserializeFrom(commandBuffer.data(), &command);
+            DeserializeFrom(commandCrc32Buffer.data(), &commandCrc32);
+
+            auto checkCrc32 = utility::Crc32(commandBuffer);
+
+            if(commandCrc32 != checkCrc32)
+            {
+                hal::WriteTo(&uciUart, "CRC32 error");
+                continue;
+            }
+
+            if(command.id == basicCommunicationCmdId)
+            {
+                auto basicTelemetry = BasicTelemetry();
+                SendPacket(basicTelemetry, &uciUart);
+            }
+            else if(command.id == dataCollectionCmdId)
+            {
+                auto randomUint32 = RODOS::uint32Rand();
+                auto randomByte1 = static_cast<uint8_t>(randomUint32);
+                auto randomByte2 = static_cast<uint8_t>(randomUint32 >> 8);
+                auto randomDoubleByte = static_cast<int16_t>(randomUint32 >> 16);
+                if(command.data == statusCollectionMode)
+                {
+                    auto statusTelemetry = StatusTelemetry();
+                    statusTelemetry.status1 = static_cast<ts::uint8_t>(randomByte1);
+                    statusTelemetry.status2 = static_cast<ts::uint8_t>(randomByte2);
+                    SendPacket(statusTelemetry, &uciUart);
+                }
+                else if(command.data == temperatureCollectionMode)
+                {
+                    auto temperatureTelemetry = TemperatureTelemetry();
+                    temperatureTelemetry.temperature = static_cast<ts::int16_t>(randomDoubleByte);
+                    SendPacket(temperatureTelemetry, &uciUart);
+                }
+            }
         }
     }
 };
