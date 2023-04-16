@@ -53,7 +53,7 @@ struct BasicTelemetry
 {
     ts::uint8_t id = 136_u8;
     ts::int32_t timestamp = 0_i32;
-    ts::int16_t length = 5_u8;
+    ts::int16_t length = 5_i16;
     ts::uint8_t padding = 0_u8;
 };
 
@@ -162,74 +162,76 @@ auto SerializeTo(Byte * destination, TemperatureTelemetry const & data) -> Byte 
 template<typename T>
 auto SendPacket(T & packet, RODOS::HAL_UART * uart)
 {
-    // auto utcTimestamp = utility::GetUnixUtc();
     packet.timestamp = static_cast<ts::int32_t>(utility::GetUnixUtc());
 
     auto packetBuffer = serial::Serialize(packet);
     auto crc32 = utility::Crc32(packetBuffer);
     auto crc32Buffer = serial::Serialize(crc32);
-    hal::WriteTo(uart, std::span<Byte>(packetBuffer));
-    hal::WriteTo(uart, std::span<Byte>(crc32Buffer));
+
+    hal::WriteTo(uart, std::span<Byte, std::size(packetBuffer)>(packetBuffer));
+    hal::WriteTo(uart, std::span<Byte, std::size(crc32Buffer)>(crc32Buffer));
 }
 
 class CosmosUartTest : public RODOS::StaticThread<>
 {
     void init() override
     {
-        constexpr auto uartBaudRate = 115200;
+        constexpr auto uartBaudRate = 115'200;
         uciUart.init(uartBaudRate);
     }
 
 
     void run() override
     {
-        hal::WriteTo(&uciUart, "Hello UCI UART!\n");
-
         while(true)
         {
             auto commandBuffer = serial::SerialBuffer<CosmosTestCommand>{};
             auto commandCrc32Buffer = serial::SerialBuffer<ts::uint32_t>{};
 
-            hal::ReadFrom(&uciUart, std::span<Byte>(commandBuffer));
-            hal::ReadFrom(&uciUart, std::span<Byte>(commandCrc32Buffer));
+            hal::ReadFrom(&uciUart, std::span<Byte, std::size(commandBuffer)>(commandBuffer));
+            hal::ReadFrom(&uciUart,
+                          std::span<Byte, std::size(commandCrc32Buffer)>(commandCrc32Buffer));
 
-            auto command = CosmosTestCommand();
-            auto commandCrc32 = 0_u32;
-            DeserializeFrom(commandBuffer.data(), &command);
-            DeserializeFrom(commandCrc32Buffer.data(), &commandCrc32);
-
+            auto command = serial::Deserialize<CosmosTestCommand>(commandBuffer);
+            auto commandCrc32 = serial::Deserialize<ts::uint32_t>(commandCrc32Buffer);
             auto checkCrc32 = utility::Crc32(commandBuffer);
 
             if(commandCrc32 != checkCrc32)
             {
+                RODOS::PRINTF("Received: %lu\n", static_cast<std::uint32_t>(commandCrc32));
+                RODOS::PRINTF("Calculated: %lu\n", static_cast<std::uint32_t>(checkCrc32));
                 hal::WriteTo(&uciUart, "CRC32 error");
                 continue;
             }
 
             if(command.id == basicCommunicationCmdId)
             {
-                auto basicTelemetry = BasicTelemetry();
+                auto basicTelemetry = BasicTelemetry{};
                 SendPacket(basicTelemetry, &uciUart);
             }
             else if(command.id == dataCollectionCmdId)
             {
                 auto randomUint32 = RODOS::uint32Rand();
-                auto randomByte1 = static_cast<uint8_t>(randomUint32);
-                auto randomByte2 = static_cast<uint8_t>(randomUint32 >> 8);
-                auto randomDoubleByte = static_cast<int16_t>(randomUint32 >> 16);
+                auto randomByte1 = static_cast<std::uint8_t>(randomUint32);
+                auto randomByte2 = static_cast<std::uint8_t>(randomUint32 >> 8);
+                auto randomDoubleByte = static_cast<std::int16_t>(randomUint32 >> 16);
                 if(command.data == statusCollectionMode)
                 {
                     auto statusTelemetry = StatusTelemetry();
-                    statusTelemetry.status1 = static_cast<ts::uint8_t>(randomByte1);
-                    statusTelemetry.status2 = static_cast<ts::uint8_t>(randomByte2);
+                    statusTelemetry.status1 = 9_u8;
+                    statusTelemetry.status2 = 10_u8;
                     SendPacket(statusTelemetry, &uciUart);
                 }
                 else if(command.data == temperatureCollectionMode)
                 {
                     auto temperatureTelemetry = TemperatureTelemetry();
-                    temperatureTelemetry.temperature = static_cast<ts::int16_t>(randomDoubleByte);
+                    temperatureTelemetry.temperature = 42_i16;
                     SendPacket(temperatureTelemetry, &uciUart);
                 }
+            }
+            else
+            {
+                hal::WriteTo(&uciUart, "Error");
             }
         }
     }
