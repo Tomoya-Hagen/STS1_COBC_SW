@@ -24,6 +24,9 @@ auto crcDmaStream = DMA2_Stream1;      // NOLINT
 auto crcDmaTcif = DMA_FLAG_TCIF1;      // NOLINT
 auto crcDmaRcc = RCC_AHB1Periph_DMA2;  // NOLINT
 
+auto crcSemaphore = RODOS::Semaphore();
+volatile auto crcAvailable = true;
+
 constexpr auto crcTable = std::to_array<std::uint32_t>(
     {0x00000000, 0x04c11db7, 0x09823b6e, 0x0d4326d9, 0x130476dc, 0x17c56b6b, 0x1a864db2,
      0x1e475005, 0x2608edb8, 0x22c9f00f, 0x2f8ad6d6, 0x2b4bcb61, 0x350c9b64, 0x31cd86d3,
@@ -68,6 +71,10 @@ constexpr auto crcTable = std::to_array<std::uint32_t>(
 
 auto EnableCrcHardware() -> void;
 auto EnableCrcDma() -> void;
+extern "C"
+{
+void DMA2_Stream1_IRQHandler();
+}
 
 
 // --- Public function definitions ---
@@ -87,11 +94,15 @@ auto InitializeCrc32Hardware() -> void
 //! 0xAD, 0xBE, 0xEF, 0xCA, 0xBB, 0xA5, 0xE3} is written (0xEFBEADDE, 0xE3A5BBCA), thus changing the
 //! result!
 //!
+//! The result is stored in the NonblockingCrc object.
+//!
 //! @param  data    The data buffer
-//! @return The corresponding CRC32 checksum
-auto ComputeCrc32(std::span<Byte const> data) -> std::uint32_t
+auto NonblockingCrc::ComputeCrc32(std::span<Byte const> data) -> std::uint32_t
 {
     auto nTrailingBytes = data.size() % sizeof(std::uint32_t);
+
+    // Only one thread can use the CRC peripheral at a time
+    crcSemaphore.enter();
 
     DMA_Cmd(crcDmaStream, DISABLE);
     // The PAR (peripheral address register) requires the address as uint32_t
@@ -190,5 +201,22 @@ auto EnableCrcDma() -> void
     // TODO: Check necessary DMA_InitStruct.DMA_Priority; default is low
 
     DMA_Init(crcDmaStream, &dmaInitStruct);
+}
+
+
+extern "C"
+{
+void DMA2_Stream7_IRQHandler()
+{
+    if(DMA_GetITStatus(crcDmaStream, crcDmaTcif))
+    {
+        DMA_ClearITPendingBit(crcDmaStream, crcDmaTcif);
+        NVIC_ClearPendingIRQ(DMA2_Stream1_IRQn);
+    }
+    else
+    {
+        NVIC_ClearPendingIRQ(DMA2_Stream1_IRQn);
+    }
+}
 }
 }
