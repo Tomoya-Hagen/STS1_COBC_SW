@@ -19,13 +19,15 @@ namespace sts1cobcsw::utility
 
 unsigned int const nBitsPerByte = CHAR_BIT;
 std::uint32_t const initialCrc32Value = 0xFFFFFFFFU;
+constexpr auto crcTimeout = 10 * RODOS::MILLISECONDS;
 
 auto crcDmaStream = DMA2_Stream1;      // NOLINT
 auto crcDmaTcif = DMA_FLAG_TCIF1;      // NOLINT
 auto crcDmaRcc = RCC_AHB1Periph_DMA2;  // NOLINT
 
 auto crcSemaphore = RODOS::Semaphore();
-volatile auto crcAvailable = true;
+auto volatile crcDmaFinished = true;
+RODOS::Thread * currentCaller;
 
 constexpr auto crcTable = std::to_array<std::uint32_t>(
     {0x00000000, 0x04c11db7, 0x09823b6e, 0x0d4326d9, 0x130476dc, 0x17c56b6b, 0x1a864db2,
@@ -73,6 +75,7 @@ auto EnableCrcHardware() -> void;
 auto EnableCrcDma() -> void;
 extern "C"
 {
+// NOLINTNEXTLINE(readability-identifier-naming)
 void DMA2_Stream1_IRQHandler();
 }
 
@@ -94,15 +97,14 @@ auto InitializeCrc32Hardware() -> void
 //! 0xAD, 0xBE, 0xEF, 0xCA, 0xBB, 0xA5, 0xE3} is written (0xEFBEADDE, 0xE3A5BBCA), thus changing the
 //! result!
 //!
-//! The result is stored in the NonblockingCrc object.
-//!
 //! @param  data    The data buffer
-auto NonblockingCrc::ComputeCrc32(std::span<Byte const> data) -> std::uint32_t
+auto ComputeCrc32(std::span<Byte const> data) -> std::uint32_t
 {
     auto nTrailingBytes = data.size() % sizeof(std::uint32_t);
 
     // Only one thread can use the CRC peripheral at a time
     crcSemaphore.enter();
+    currentCaller = RODOS::Thread::getCurrentThread();
 
     DMA_Cmd(crcDmaStream, DISABLE);
     // The PAR (peripheral address register) requires the address as uint32_t
@@ -112,8 +114,22 @@ auto NonblockingCrc::ComputeCrc32(std::span<Byte const> data) -> std::uint32_t
     CRC_ResetDR();
     DMA_Cmd(crcDmaStream, ENABLE);
 
-    while(DMA_GetFlagStatus(crcDmaStream, crcDmaTcif) == RESET) {}
-    DMA_ClearFlag(crcDmaStream, crcDmaTcif);
+    // If DMA is not instantly finished when executing this instruction
+    // -> sleep until interrupt wakes thread or timeout occurs
+    if(not crcDmaFinished)
+    {
+        // Worst case: DMA finishes after crcDmaFinished check, but before sleeping
+        // -> full timeout penalty
+        RODOS::AT(RODOS::NOW() + crcTimeout);
+    }
+
+    // Check if interrupt occured
+    if(not crcDmaFinished)
+    {
+        // TODO: timeout error handling
+        // Error
+        return 0U;
+    }
 
     if(nTrailingBytes > 0)
     {
@@ -121,7 +137,9 @@ auto NonblockingCrc::ComputeCrc32(std::span<Byte const> data) -> std::uint32_t
         std::memcpy(&trailingWord, data.last(nTrailingBytes).data(), nTrailingBytes);
         CRC_CalcCRC(trailingWord);
     }
-    return CRC_GetCRC();
+    auto crc32 = CRC_GetCRC();
+    crcSemaphore.leave();
+    return crc32;
 }
 
 
@@ -201,17 +219,22 @@ auto EnableCrcDma() -> void
     // TODO: Check necessary DMA_InitStruct.DMA_Priority; default is low
 
     DMA_Init(crcDmaStream, &dmaInitStruct);
+
+    DMA_ITConfig(crcDmaStream, DMA_IT_TC, DISABLE);
+    NVIC_EnableIRQ(DMA2_Stream1_IRQn);
 }
 
 
 extern "C"
 {
-void DMA2_Stream7_IRQHandler()
+void DMA2_Stream1_IRQHandler()
 {
-    if(DMA_GetITStatus(crcDmaStream, crcDmaTcif))
+    if(DMA_GetITStatus(crcDmaStream, crcDmaTcif) == SET)
     {
         DMA_ClearITPendingBit(crcDmaStream, crcDmaTcif);
         NVIC_ClearPendingIRQ(DMA2_Stream1_IRQn);
+        crcDmaFinished = true;
+        currentCaller->resume();
     }
     else
     {
