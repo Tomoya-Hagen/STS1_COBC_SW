@@ -682,7 +682,7 @@ auto SetTxType(TxType txType) -> void
 
 // TODO: Rewrite using span instead of pointer + length
 // It could also be helpful to overload this and provide a version for string_view
-auto TransmitData(std::uint8_t const * data, std::size_t length) -> void
+auto Send(std::uint8_t const * data, std::size_t length) -> void
 {
     auto dataIndex = 0;
     ClearFifos();
