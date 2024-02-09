@@ -54,6 +54,12 @@ enum class PropertyGroup : std::uint8_t
 };
 
 
+enum class PowerMode : std::uint8_t
+{
+    standby = 0x01
+};
+
+
 // --- Private globals ---
 
 constexpr std::uint32_t powerUpXoFrequency = 26'000'000;  // 26 MHz
@@ -63,6 +69,10 @@ constexpr auto cmdPartInfo = 0x01_b;
 constexpr auto cmdPowerUp = 0x02_b;
 constexpr auto cmdSetProperty = 0x11_b;
 constexpr auto cmdGpioPinCfg = 0x13_b;
+constexpr auto cmdFifoInfo = 0x15_b;
+constexpr auto cmdGetIntStatus = 0x20_b;
+constexpr auto cmdStartTx = 0x31_b;
+constexpr auto cmdChangeState = 0x34_b;
 constexpr auto cmdReadCmdBuff = 0x44_b;
 
 // Command lengths
@@ -126,6 +136,16 @@ auto WaitOnCts() -> void;
 auto SetProperties(PropertyGroup propertyGroup,
                    Byte startProperty,
                    std::span<Byte const> propertyValues) -> void;
+
+auto EnterPowerMode(PowerMode powerMode) -> void;
+
+auto ClearInterrupts() -> void;
+
+auto ClearFifos() -> void;
+
+auto StartTx(std::uint16_t length) -> void;
+
+auto WriteFifo(std::uint8_t const * data, std::size_t length) -> void;
 
 
 // --- Public function definitions ---
@@ -660,6 +680,90 @@ auto SetTxType(TxType txType) -> void
 }
 
 
+// TODO: Rewrite using span instead of pointer + length
+// It could also be helpful to overload this and provide a version for string_view
+auto TransmitData(std::uint8_t const * data, std::size_t length) -> void
+{
+    auto dataIndex = 0;
+    ClearFifos();
+
+    // Set TX Data Length
+    // TODO: Check if we can just set the length in START_TX
+    // TODO: Maybe put setting the data length in a function
+    SetProperties(PropertyGroup::pkt,
+                  /*startProperty=*/0x0D_b,
+                  Span({
+                      static_cast<Byte>(length >> CHAR_BIT),  // 0 | 0 | 0 | FIELD_1_LENGTH[12:8]
+                      static_cast<Byte>(length)               // FIELD_1_LENGTH[7:0]
+                  }));
+
+    auto nFillBytes = 60;  // Fill the TX FIFO with 60 bytes each "round"
+    auto almostEmptyInterruptEnabled = false;
+
+    // While the packet is longer than a single fill round, wait for the almost empty interrupt,
+    // afterwards for the packet sent interrupt
+    while(length - dataIndex > nFillBytes)
+    {
+        // Enable the almost empty interrupt in the first round
+        if(not almostEmptyInterruptEnabled)
+        {
+            // TODO: Setting interrupts could be put in a function
+            SetProperties(
+                PropertyGroup::intCtl,
+                0x01_b,
+                Span({
+                    0b00000010_b  // INT_CTL_PH_ENABLE: Enable TX FIFO almost empty interrupt
+                }));
+            almostEmptyInterruptEnabled = true;
+        }
+
+        // Write nFillBytes bytes to the TX FIFO
+        WriteFifo(data + dataIndex, nFillBytes);
+        dataIndex += nFillBytes;
+        ClearInterrupts();
+        StartTx(0);
+        // Wait for TX FIFO almost empty interrupt
+        while(nirqGpioPin.Read() == hal::PinState::set)
+        {
+            RODOS::AT(RODOS::NOW() + 10 * RODOS::MICROSECONDS);
+        }
+    }
+
+    // Now enable the packet sent interrupt
+    // auto interruptPropertyValues = std::to_array<Byte, 1>({0b00100000_b});
+    // SetProperty<1>(PropertyGroup::intCtl, 0x01_b, std::span<Byte,
+    // 1>(interruptPropertyValues));
+
+    // Enable Packet Sent Interrupt
+    SetProperties(PropertyGroup::intCtl,
+                  /*startProperty=*/0x01_b,
+                  Span({
+                      0b00100000_b  // INT_CTL_PH_ENABLE: Enable packet sent interrupt
+                  }));
+
+    ClearInterrupts();
+
+    // Write the rest of the data
+    WriteFifo(data + dataIndex, length - dataIndex);
+
+    StartTx(0);
+
+    auto startTime = RODOS::NOW();
+
+    // Wait for Packet Sent Interrupt
+    while(nirqGpioPin.Read() == hal::PinState::set)
+    {
+        if(RODOS::NOW() - startTime > 1 * RODOS::SECONDS)
+        {
+            break;
+        }
+        RODOS::AT(RODOS::NOW() + 10 * RODOS::MICROSECONDS);
+    }
+
+    EnterPowerMode(PowerMode::standby);
+}
+
+
 // --- Private function definitions ---
 
 auto InitializeGpioAndSpi() -> void
@@ -787,5 +891,66 @@ auto SetProperties(PropertyGroup propertyGroup,
               std::begin(setPropertiesBuffer) + setPropertiesHeaderSize);
 
     SendCommandNoResponse(Span(setPropertiesBuffer).first(bytesToSend));
+}
+
+
+auto EnterPowerMode(PowerMode powerMode) -> void
+{
+    auto commandBuffer = std::to_array<Byte>({cmdChangeState, static_cast<Byte>(powerMode)});
+    SendCommandNoResponse(commandBuffer);
+}
+
+
+auto ClearInterrupts() -> void
+{
+    auto commandBuffer = std::to_array<Byte>({cmdGetIntStatus, 0x00_b, 0x00_b, 0x00_b});
+    SendCommandNoResponse(commandBuffer);
+}
+
+
+auto ClearFifos() -> void
+{
+    auto commandBuffer = std::to_array<Byte>({cmdFifoInfo, 0x03_b});
+    SendCommandNoResponse(commandBuffer);
+}
+
+
+auto StartTx(std::uint16_t length) -> void
+{
+    auto commandBuffer = std::to_array({cmdStartTx,
+                                        0x00_b,
+                                        0x30_b,
+                                        // NOLINTNEXTLINE(hicpp-signed-bitwise)
+                                        static_cast<Byte>(length >> CHAR_BIT),
+                                        static_cast<Byte>(length),
+                                        0x00_b,
+                                        0x00_b});
+    SendCommandNoResponse(commandBuffer);
+}
+
+
+// TODO: modernize (span instead of pointer + length, our communication abstraction,
+// WaitOnCts())
+auto WriteFifo(std::uint8_t const * data, std::size_t length) -> void
+{
+    csGpioPin.Reset();
+    AT(NOW() + 20 * MICROSECONDS);
+    auto buf = std::to_array<std::uint8_t>({0x66});
+    spi.write(std::data(buf), std::size(buf));
+    spi.write(data, length);
+    AT(NOW() + 2 * MICROSECONDS);
+    csGpioPin.Set();
+
+    auto cts = std::to_array<std::uint8_t>({0x00, 0x00});
+    auto req = std::to_array<std::uint8_t>({0x44, 0x00});
+    do
+    {
+        AT(NOW() + 20 * MICROSECONDS);
+        csGpioPin.Reset();
+        AT(NOW() + 20 * MICROSECONDS);
+        spi.writeRead(std::data(req), std::size(req), std::data(cts), std::size(cts));
+        AT(NOW() + 2 * MICROSECONDS);
+        csGpioPin.Set();
+    } while(cts[1] != 0xFF);
 }
 }
