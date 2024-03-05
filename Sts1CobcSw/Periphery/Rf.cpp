@@ -95,17 +95,17 @@ auto watchdogResetGpioPin = hal::GpioPin(hal::watchdogClearPin);
 // communication
 // TODO: Use delay instead of pause, because that's how we did it everywhere else
 // TODO: Do not use trailing comments since they cause line breaks
-constexpr auto csPinAfterResetPause =
+constexpr auto csPinAfterResetDelay =
     20 * MICROSECONDS;  // Pause time after pulling NSEL (here CS) low
-constexpr auto csPinPreSetPause =
+constexpr auto csPinPreSetDelay =
     2 * MICROSECONDS;  // Pause time before pulling NSEL (here CS) high
-constexpr auto porRunningPause =
+constexpr auto porRunningDelay =
     20 * MILLISECONDS;  // Pause time to wait for Power on Reset to finish
-constexpr auto porCircuitSettlePause =
+constexpr auto porCircuitSettleDelay =
     100 * MILLISECONDS;  // Time until PoR circuit settles after applying power
 constexpr auto initialWaitForCtsDelay =
     20 * MICROSECONDS;  // Pause time at the beginning of the CTS wait loop
-constexpr auto watchDogResetPinPause =
+constexpr auto watchDogResetPinDelay =
     1 * MILLISECONDS;  // Pause time for the sequence reset -> pause -> set -> pause -> reset in
                        // initialization
 
@@ -133,7 +133,6 @@ auto SetProperties(PropertyGroup propertyGroup,
 // --- Public function definitions ---
 
 // TODO: Get rid of all the magic numbers
-// TODO: Replace all C-style arrays with std::array
 
 auto Initialize(TxType txType) -> void
 {
@@ -673,18 +672,18 @@ auto InitializeGpioAndSpi() -> void
 
     watchdogResetGpioPin.Direction(hal::PinDirection::out);
     watchdogResetGpioPin.Reset();
-    AT(NOW() + watchDogResetPinPause);
+    AT(NOW() + watchDogResetPinDelay);
     watchdogResetGpioPin.Set();
-    AT(NOW() + watchDogResetPinPause);
+    AT(NOW() + watchDogResetPinDelay);
     watchdogResetGpioPin.Reset();
 
     constexpr auto baudrate = 10'000'000;
     hal::Initialize(&spi, baudrate);
 
     // Enable Si4463 and wait for PoR to finish
-    AT(NOW() + porCircuitSettlePause);
+    AT(NOW() + porCircuitSettleDelay);
     sdnGpioPin.Reset();
-    AT(NOW() + porRunningPause);
+    AT(NOW() + porRunningDelay);
 }
 
 
@@ -708,9 +707,9 @@ auto PowerUp(PowerUpBootOptions bootOptions,
 auto SendCommand(std::span<Byte const> data) -> void
 {
     csGpioPin.Reset();
-    AT(NOW() + csPinAfterResetPause);
+    AT(NOW() + csPinAfterResetDelay);
     hal::WriteTo(&spi, data);
-    AT(NOW() + csPinPreSetPause);
+    AT(NOW() + csPinPreSetDelay);
     csGpioPin.Set();
     WaitForCts();
 }
@@ -722,9 +721,9 @@ auto SendCommand(std::span<Byte const> data) -> std::array<Byte, answerLength>
     SendCommand(data);
     auto answer = std::array<Byte, answerLength>{};
     csGpioPin.Reset();
-    AT(NOW() + csPinAfterResetPause);
+    AT(NOW() + csPinAfterResetDelay);
     hal::ReadFrom(&spi, Span(&answer));
-    AT(NOW() + csPinPreSetPause);
+    AT(NOW() + csPinPreSetDelay);
     csGpioPin.Set();
     return answer;
 }
@@ -738,11 +737,11 @@ auto WaitForCts() -> void
     do
     {
         csGpioPin.Reset();
-        AT(NOW() + csPinAfterResetPause);
+        AT(NOW() + csPinAfterResetDelay);
         hal::WriteTo(&spi, Span(cmdReadCmdBuff));
         auto cts = 0x00_b;
         hal::ReadFrom(&spi, Span(&cts));
-        AT(NOW() + csPinPreSetPause);
+        AT(NOW() + csPinPreSetDelay);
         csGpioPin.Set();
         if(cts == dataIsReadyValue)
         {
