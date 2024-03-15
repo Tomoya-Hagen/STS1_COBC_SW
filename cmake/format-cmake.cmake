@@ -27,7 +27,7 @@ string(LENGTH "${CMAKE_SOURCE_DIR}/" path_prefix_length)
 
 foreach(file IN LISTS files)
     execute_process(
-        COMMAND cmake-format --style=file "${flag}" "${file}"
+        COMMAND cmake-format -c /.cmake-format.py "${flag}" "${file}"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         RESULT_VARIABLE result ${args}
     )
