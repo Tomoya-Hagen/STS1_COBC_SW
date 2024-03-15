@@ -26,12 +26,7 @@ file(
     Tests/*.ipp
 )
 
-file(
-    GLOB_RECURSE
-    cmake_files
-    cmake/*.cmake
-    CMakeLists.txt
-)
+file(GLOB_RECURSE cmake_files cmake/*.cmake CMakeLists.txt)
 
 set(badly_formatted "")
 set(output "")
@@ -55,6 +50,7 @@ endforeach()
 
 foreach(file IN LISTS cmake_files)
     execute_process(
+        if (NOT FIX) set (flag "") endif ()
         COMMAND cmake-format --style=file "${flag}" "${file}"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         RESULT_VARIABLE result ${args}

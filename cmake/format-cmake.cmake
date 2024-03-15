@@ -8,7 +8,7 @@ endmacro()
 
 default(FIX NO)
 
-set(flag --output-replacements-xml)
+set(flag "")
 set(args OUTPUT_VARIABLE output)
 if(FIX)
     set(flag -i)
