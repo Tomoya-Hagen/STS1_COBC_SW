@@ -50,7 +50,9 @@ endforeach()
 
 foreach(file IN LISTS cmake_files)
     execute_process(
-        if (NOT FIX) set (flag "") endif ()
+        if (NOT FIX) 
+            set (flag "") 
+        endif ()
         COMMAND cmake-format --style=file "${flag}" "${file}"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         RESULT_VARIABLE result ${args}
